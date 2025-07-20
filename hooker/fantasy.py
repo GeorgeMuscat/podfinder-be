@@ -1,4 +1,6 @@
 import requests
+import json
+
 BASE_URL = "https://fantasy.nrl.com/data"
 
 s = requests.Session()
@@ -23,17 +25,6 @@ def get_all_teams():
     r.raise_for_status()
     return r.json()
 
-
-def upsert_player_info(external_player_info: dict):
-    # First check if player with the external ID already exists
-
-    # If it does, update the existing record
-
-    # If it doesn't, insert a new record
-
-    # nvm can just do INSERT OR REPLACE INTO
-    pass
-
-
-def upsert_player_stats(player_stats: dict):
-    pass
+def load_local_data(path: str) -> dict:
+    with open(path, 'r') as fp:
+        return json.load(fp)
