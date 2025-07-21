@@ -1,6 +1,9 @@
 import psycopg
-from ..fantasy import get_all_teams, pull_players, load_local_data
+
+from hooker.sql.helpers import get_external_to_internal_position_ids, get_external_to_internal_team_ids, get_external_to_internal_venue_ids, get_internal_round_id, get_internal_team_id, get_internal_venue_id
+from ..fantasy import get_all_teams, get_rounds, get_venues, pull_players, load_local_data
 from hooker import conn
+from datetime import datetime
 
 def insert_teams():
     with conn.cursor() as cur:
@@ -123,23 +126,73 @@ def upsert_players():
 
 def upsert_rounds():
     # TODO: Make this fetch dynamically.
-    pass
+    rounds = load_local_data("../data/fantasy/rounds.json")
 
-
-def get_external_to_internal_team_ids() -> dict[int, int]:
     with conn.cursor() as cur:
-        cur.execute("SELECT id, external_fantasy_id FROM teams")
-        data = cur.fetchall()
-        return {v[1]: v[0] for v in data}
+        for round in rounds:
+            cur.execute(
+                '''INSERT INTO rounds ("round", "year", "start", "end")
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT ("round", "year") DO UPDATE SET
+                    "start" = EXCLUDED."start",
+                    "end" = EXCLUDED."end";
+                ''',
+                (round["id"], datetime.fromisoformat(round["start"]).year, datetime.fromisoformat(round["start"]).date(), datetime.fromisoformat(round["end"]).date())
+            )
+    conn.commit()
 
-def get_external_to_internal_position_ids() -> dict[int, int]:
+def upsert_venues():
+    venues = get_venues()
     with conn.cursor() as cur:
-        cur.execute("SELECT id, external_fantasy_id FROM fantasy_positions")
-        data = cur.fetchall()
-        return {v[1]: v[0] for v in data}
+        for venue in venues:
+            # Weird case where the venue name is "TBA".
+            # We don't want that...
+            if venue["name"] == "TBA":
+                continue
+            cur.execute(
+                '''
+                INSERT INTO venues (name, external_fantasy_id)
+                VALUES (%s, %s)
+                ON CONFLICT (external_fantasy_id) DO UPDATE SET
+                    name = EXCLUDED.name;
+                ''',
+                (venue["name"], venue["id"])
+            )
+    conn.commit()
+
+def upsert_matches():
+    rounds = get_rounds()
+
+    with conn.cursor() as cur:
+        for round in rounds:
+            for match in round["matches"]:
+                # Look up internal venue id and internal round id
+                venue_id = get_internal_venue_id(match["venue_id"])
+                round_id = get_internal_round_id(round["id"], datetime.fromisoformat(round["start"]).year)
+                # Look up internal team ids
+                home_team_id = get_internal_team_id(match["home_squad_id"])
+                away_team_id = get_internal_team_id(match["away_squad_id"])
+
+                cur.execute(
+                    '''
+                    INSERT INTO matches (external_fantasy_id, round_id, home_team_id, away_team_id, venue_id, date)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (external_fantasy_id) DO UPDATE SET
+                        round_id = EXCLUDED.round_id,
+                        home_team_id = EXCLUDED.home_team_id,
+                        away_team_id = EXCLUDED.away_team_id,
+                        venue_id = EXCLUDED.venue_id,
+                        date = EXCLUDED.date;
+                    ''', (match["id"], round_id, home_team_id, away_team_id, venue_id, match["date"])
+                )
+    conn.commit()
+
 
 if __name__ == "__main__":
     # insert_teams()
     # insert_fantasy_positions()
     # insert_positions()
-    upsert_players()
+    # upsert_players()
+    # upsert_rounds()
+    # upsert_venues()
+    upsert_matches()
