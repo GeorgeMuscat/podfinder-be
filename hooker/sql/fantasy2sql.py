@@ -1,7 +1,7 @@
 import psycopg
 
-from hooker.sql.helpers import get_external_to_internal_position_ids, get_external_to_internal_team_ids, get_external_to_internal_venue_ids, get_internal_round_id, get_internal_team_id, get_internal_venue_id
-from ..fantasy import get_all_teams, get_rounds, get_venues, pull_players, load_local_data
+from hooker.sql.helpers import get_external_to_internal_position_ids, get_external_to_internal_team_ids, get_external_to_internal_venue_ids, get_internal_match_id, get_internal_player_id, get_internal_round_id, get_internal_team_id, get_internal_venue_id
+from ..fantasy import get_all_teams, get_rounds, get_venues, pull_player_stats, pull_players, load_local_data
 from hooker import conn
 from datetime import datetime
 
@@ -95,9 +95,9 @@ def insert_positions():
                 raise ValueError(f"Fantasy position {fantasy_pos_abbr} not found in fantasy_positions table.")
     conn.commit()
 
-def upsert_players():
+def upsert_all_players():
     '''
-    This function will upsert all players.
+    This function will upsert_all all players.
     Only use this when you know you need to update or create all player data.
     '''
 
@@ -124,7 +124,7 @@ def upsert_players():
                     ''', (player["id"], player["first_name"], player["last_name"], team_mapping[player["squad_id"]], position_mapping[player["positions"][0]], position_mapping[player["positions"][1]] if len(player["positions"]) > 1 else None))
     conn.commit()
 
-def upsert_rounds():
+def upsert_all_rounds():
     # TODO: Make this fetch dynamically.
     rounds = load_local_data("../data/fantasy/rounds.json")
 
@@ -141,7 +141,7 @@ def upsert_rounds():
             )
     conn.commit()
 
-def upsert_venues():
+def upsert_all_venues():
     venues = get_venues()
     with conn.cursor() as cur:
         for venue in venues:
@@ -160,7 +160,7 @@ def upsert_venues():
             )
     conn.commit()
 
-def upsert_matches():
+def upsert_all_matches():
     rounds = get_rounds()
 
     with conn.cursor() as cur:
@@ -187,12 +187,78 @@ def upsert_matches():
                 )
     conn.commit()
 
+def upsert_all_match_stats():
+    rounds = load_local_data("../data/fantasy/rounds.json")
+    matches = [match for round in rounds for match in round["matches"]]
+    with conn.cursor() as cur:
+        for match in matches:
+            match_id = get_internal_match_id(match["id"])
+            cur.execute(
+                '''
+                INSERT INTO match_stats (match_id, home_score, away_score)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (match_id) DO UPDATE SET
+                    home_score = EXCLUDED.home_score,
+                    away_score = EXCLUDED.away_score;
+                ''',
+                (match_id, match["home_score"], match["away_score"])
+            )
+    conn.commit()
+
+
+def upsert_all_player_match_stats():
+    players_ids = [player["id"] for player in pull_players()]
+
+    with conn.cursor() as cur:
+        for player_id in players_ids:
+            stats = pull_player_stats(player_id)
+            internal_player_id = get_internal_player_id(player_id)
+
+            # Due to midseason transfers, we cannot rely on the current team of the player.
+            # Instead, we will cross-reference
+
+            cur.executemany(
+                '''
+                INSERT INTO player_match_stats (match_id, player_id, team_id, goals, assists, tackles)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ''',
+                [
+                   (get_internal_match_id(match["id"]), internal_player_id, get_internal_team_id(match["team_id"]), stats["tries"], stats["goals"], stats["assists"], stats["tackles"])
+                    for match in stats.items()
+                ]
+            )
+
+            conn.commit()
+
+def upsert_transfers():
+    players = pull_players()
+    for player in players:
+        if player["original_squad_id"] == 0:
+            continue
+
+        from_team_id = get_internal_team_id(player["original_squad_id"])
+        to_team_id = get_internal_team_id(player["squad_id"])
+        round_id = get_internal_round_id(player["transfer_round"], datetime.now().year)
+        player_id = get_internal_player_id(player["id"])
+
+        with conn.cursor() as cur:
+            cur.execute(
+                '''
+                INSERT INTO transfers (from_id, to_id, round_id, player_id)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (from_id, to_id, round_id, player_id) DO NOTHING;
+                ''',
+                (from_team_id, to_team_id, round_id, player_id)
+            )
+        conn.commit()
 
 if __name__ == "__main__":
     # insert_teams()
     # insert_fantasy_positions()
     # insert_positions()
-    # upsert_players()
-    # upsert_rounds()
-    # upsert_venues()
-    upsert_matches()
+    # upsert_all_players()
+    # upsert_all_rounds()
+    # upsert_all_venues()
+    # upsert_all_matches()
+    # upsert_all_match_stats()
+    upsert_transfers()
